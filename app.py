@@ -347,7 +347,7 @@ def validate_credentials():
             'valid': is_valid,
             'reason': message,
             'timestamp': datetime.utcnow().isoformat(),
-            'hint': 'Run python3 extract_credentials.py to update credentials' if not is_valid else None
+            'hint': 'Use POST /api/v1/refresh-credentials to update credentials' if not is_valid else None
         }), 200
 
     except Exception as e:
@@ -356,6 +356,55 @@ def validate_credentials():
             'valid': False,
             'reason': str(e),
             'timestamp': datetime.utcnow().isoformat()
+        }), 500
+
+
+@app.route('/api/v1/refresh-credentials', methods=['POST'])
+@limiter.limit("5 per minute")
+def refresh_credentials():
+    """Update credentials on-the-fly without restarting API."""
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'No JSON body provided'}), 400
+
+        csrf_token = data.get('csrf_token', '').strip()
+        li_at_cookie = data.get('li_at_cookie', '').strip()
+
+        if not csrf_token or not li_at_cookie:
+            return jsonify({
+                'error': 'Missing csrf_token or li_at_cookie',
+                'hint': 'Provide both credentials in JSON body'
+            }), 400
+
+        # Validate credentials before updating
+        scraper = LinkedInProfileScraper(csrf_token, li_at_cookie)
+        is_valid, validation_msg = scraper.validate_credentials()
+
+        if not is_valid:
+            return jsonify({
+                'error': 'Credentials are invalid',
+                'reason': validation_msg,
+                'hint': 'Please verify the credentials and try again'
+            }), 401
+
+        # Update environment variables
+        os.environ['LINKEDIN_CSRF_TOKEN'] = csrf_token
+        os.environ['LINKEDIN_LI_AT_COOKIE'] = li_at_cookie
+
+        return jsonify({
+            'success': True,
+            'message': 'Credentials updated successfully',
+            'timestamp': datetime.utcnow().isoformat(),
+            'hint': 'API is now using fresh credentials'
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Credential refresh error: {e}")
+        return jsonify({
+            'error': 'Failed to refresh credentials',
+            'details': str(e)
         }), 500
 
 
